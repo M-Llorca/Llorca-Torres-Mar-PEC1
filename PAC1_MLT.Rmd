@@ -1,0 +1,584 @@
+---
+output:
+  word_document: default
+  html_document: default
+---
+
+### 1. Selecció d'un dataset de metabolòmica.
+
+Es selecciona el dataset 2024-Cachexia del repositori GitHub.
+
+```{r, warning=FALSE, message=FALSE}
+library(knitr)
+
+# Descarregar les dades
+url <- "https://rest.xialab.ca/api/download/metaboanalyst/human_cachexia.csv"
+
+cachexia_data <- read.csv(url, header = TRUE)
+kable(head(cachexia_data, 10), format = "markdown")
+```
+
+Aquestes dades son sobre la caquèxia, una síndrome metabòlica complexa associada a una malaltia subjacent (com el càncer) i que es caracteritza per la pèrdua de múscul amb o sense pèrdua de massa grassa. Consisteixen en un total de 77 mostres d'orina, 47 d'elles pacients amb caquèxia i 30 pacients control.
+
+
+### 2. Crea un objecte de classe SummarizedExperiment que contingui les dades i les metadades.
+
+Per a aquest estudi es separen les dades en dues parts:
+
+- Dades: conjunt de dades amb totes les columnes de concentracions de metabolits. Les dades que interessen per a l'anàlisi de metabolòmica (columnes de la 3 a la 65).
+
+- Metadades: conjunt que inclou les metadades ID del pacient i pèrdua muscular, que ajudaràn a interpretar l'anàlisi (columnes 1 i 2).
+
+```{r, warning=FALSE, message=FALSE}
+library(Biobase)
+library(SummarizedExperiment)
+
+expressionValues <- t(as.matrix(cachexia_data[, 3:65]))  
+# Es transposa la matriu per tenir els metabolits com files i les concentracions com columnes
+
+# Metadades de les columnes: informació adicional sobre les mostres (columnes 1 i 2)
+colData <- data.frame(
+  Patient.ID = cachexia_data$Patient.ID,  # ID del pacient
+  Muscle.loss = cachexia_data$Muscle.loss,  # Pèrdua muscular
+  row.names = paste0("S", 1:77)  # Nombre de las filas = Nombre de la muestra
+)
+
+# Metadades de les files: es guarden els noms del metabolits
+rowData <- data.frame(
+  Metabolite = rownames(expressionValues)
+)
+
+# Per simplificar la matriu, es canvien els noms dels pacients (per identificació de la mostra) i dels metabolits:
+
+colnames(expressionValues) <- paste0("S", 1:77) 
+# Es canvia el nom de les columnes on cada sample (S, mostra) correspon a un pacient
+rownames(expressionValues) <- paste0("M", 1:nrow(expressionValues))
+# Es canvia el nom de les files on cada una és un metabolit (M) diferent
+
+# Es crea l'objecte SummarizedExperiment amb les dades preparades prèviament
+se_cachexia <- SummarizedExperiment(
+  assays = list(raw = expressionValues),
+  colData = colData,
+  rowData = rowData
+)
+
+# S'afegeix una nova metadada amb la descripció de lestudi
+metadata(se_cachexia) <- list(study_description = "A metabolite concentration table from human urine samples with two groups")
+
+# Es mostra l'objecte SummarizedExperiment creat:
+se_cachexia
+```
+
+Diferències entre SummarizedExperiment i ExpressionSet
+
+Ambdues son classes que s'utilitzen per gestionar dades experimentals en biologia computacional.
+
+- ExpressionSet: dissenyada principalment per a experiments basats en microarrays, on les files representen característiques com gens o sondes, i les columnes representen les mostres. Son matrius amb una gran quantitat de metadades. Conté tres components principals: assayData (matriu de dades), phenoData (metadades de les mostres) i featureData (metadades de les features).
+
+- SummarizedExperiment: dissenyada principalment per a experiments basats en seqüenciació i altres dades òmiques (metabolòmica, transcriptòmica, etc.). Permet múltiples assays (matrius) dins del mateix objecte, cadascun representant diferents tipus de dades experimentals (sempre que tinguin les mateixes dimensions). Les metadades de les files es gestionen amb rowData i les de les columnes es gestionen amb colData. És més flexible que la ExpressionSet.
+
+Bibliografia:
+
+https://www.bioconductor.org/packages//release/bioc/vignettes/omicsViewer/inst/doc/quickStart.html
+
+https://www.bioconductor.org/packages/devel/bioc/vignettes/SummarizedExperiment/inst/doc/SummarizedExperiment.html
+
+
+### 3. Porteu a terme una anàlisi exploratòria que us proporcioni una visió general del dataset.
+
+Primer, s'utilitzen funcions bàsiques per tenir una visió general:
+
+```{r}
+# Per accedir a les dades d'expressió (assays)
+dim(assays(se_cachexia)$raw)
+```
+
+```{r}
+# Per accedir a les files (metabolits)
+head(rowData(se_cachexia))
+```
+
+```{r}
+# Per accedir a les metadades de les columnes (ID pacient i pèrdua muscular)
+head(colData(se_cachexia))
+```
+
+```{r}
+# A més, es pot fer una selecció específica de la matriu de dades:
+
+assays(se_cachexia)[[1]][1:10, 1:5]
+# assays(se_cachexia) retorna una llista amb tots els assajos emmagatzemats a l'objecte SummarizedExperiment
+# Es selecciona el primer assaig [[1]] i es seleccionenen les primeres 10 files i les primeres 5 columnes de la matriu d'expressions [1:10, 1:5]
+```
+
+De manera que, aquest SummarizedExperiment conté una matriu de dimensions 63x77, on les files son els diferents metabolits i les columnes son les diferents mostres. 
+
+A més, les diferents mostres estàn vinculades amb les metadades corresponents: el ID del pacient i el tipus de pèrdua muscular (cachexic vs control).
+
+També les files de metabolits estàn vinculades amb el seu nom complet.
+
+
+Posteriorment, es fa una visualització de dades.
+
+#### Exploració univariant.
+
+Gràfic de la distribució de les concentracions dels metabolits per cada metabolit:
+
+```{r, warning=FALSE, message=FALSE}
+library(ggplot2)
+library(reshape2)
+
+# Es converteixen les dades en format llarg per a la representació gràfica
+long_data <- melt(assays(se_cachexia)$raw)
+colnames(long_data) <- c("Metabolite", "Sample", "Concentration")
+
+# Es crea el boxplot
+ggplot(long_data, aes(x = Metabolite, y = Concentration)) +
+  geom_boxplot(outlier.colour = "red", outlier.shape = 16) + 
+  # Punts vermells per a valors outliers
+  labs(title = "Distribució de les concentracions dels metabòlits",
+       x = "Metabolits", y = "Concentració") +
+  # Títols del gràfic i dels eixos
+  theme_bw() + # S'aplica tema blanc i negre
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        # angle = 90 gira el text en vertical, hjust i vjust per ajustar la posició de les etiquetes
+        plot.title = element_text(hjust = 0.5) # Per centrar el títol del gràfic
+        )
+
+```
+
+Donat que l'estudi està enfocat a una comparació entre el grup de pacients amb cachexia i el grup de pacients de control (sense cachexia), es realitza una taula amb algunes dades estadístiques importants a tenir en compte per a l'anàlisi. La taula conté les següents columnes:
+
+- Metabolite: Nom del metabolit.
+
+- TotalMissing: Nombre total de valors perduts. Si un metabolit té molts valors perduts (TotalMissing), pot ser menys fiable per a conclusions estadístiques.
+
+- TTestPvalue: P-value del test t. Un valor de TTestPvalue<0.05 indica que la diferència entre els dos grups no és deguda a l'atzar (comprova si la diferència observada entre Cachexic_Mean i Control_Mean és estadísticament significativa).
+
+- Cachexic_Mean: Mitjana del grup cachexic.
+
+- Control_Mean: Mitjana del grup control.
+
+Comparació entre Cachexic_Mean i Control_Mean: Si la mitjana d'un metabolit és molt diferent entre els dos grups, això pot indicar un potencial biomarcador.
+
+
+```{r, warning=FALSE, message=FALSE}
+library(dplyr)
+library(tidyr)
+library(stats)
+library(knitr)
+library(tibble)
+
+# Es transformen les dades en format llarg
+data_long <- assays(se_cachexia)$raw %>%
+  as.data.frame() %>%
+  rownames_to_column("Metabolite") %>%
+  pivot_longer(cols = -Metabolite, names_to = "Sample", values_to = "Concentration") %>%
+  mutate(Group = colData(se_cachexia)$Muscle.loss[match(Sample, rownames(colData(se_cachexia)))])
+
+# Es defineix el grup positiu ("cachexic")
+pos_outcome <- "cachexic"
+
+# Funció per calcular estadístiques univariants
+univar <- function(data, group_col, value_col, posclass) {
+  data %>%
+    group_by(Metabolite) %>%
+    summarise(
+      TotalMissing = sum(is.na(.data[[value_col]])),
+      TTestPvalue = t.test(.data[[value_col]] ~ .data[[group_col]])$p.value,
+      Cachexic_Mean = mean(.data[[value_col]][.data[[group_col]] == posclass], na.rm = TRUE),
+      Control_Mean = mean(.data[[value_col]][.data[[group_col]] != posclass], na.rm = TRUE)
+    )
+}
+
+# Aplicar la funció a les dades transformades
+stats_table <- univar(data_long, group_col = "Group", value_col = "Concentration", posclass = pos_outcome)
+
+# Mostrar la taula amb kable (amb l'opció 'digits' s'escolleix quants decimals visualitzar)
+kable(stats_table, caption = "Estadístiques dels Metabolits", digits = c(0, 0, 3, 2, 2), format = "markdown")
+```
+
+```{r}
+# Afegir la columna amb la diferència entre les mitjanes de Cachexia i Control
+stats_table <- stats_table %>%
+  mutate(Difference = Cachexic_Mean - Control_Mean)
+
+# Mostrar només les columnes desitjades (Metabolite, Cachexic_Mean, Control_Mean, Difference)
+stats_table_filtered <- stats_table %>%
+  dplyr::select(Metabolite, Cachexic_Mean, Control_Mean, Difference)
+
+# Mostrar els 10 metabòlits amb la major diferència en la mitjana de concentració
+top_10_diff <- stats_table_filtered %>%
+  arrange(desc(abs(Difference))) %>%
+  head(10)
+
+# Mostrar per pantalla els 10 metabòlits amb la major diferència
+print(top_10_diff)
+```
+
+Arrel de la taula anterior, s'utilitza el Test estadístic per seleccionar els metabolits que tenen diferencies significatives entre grups.
+
+```{r}
+# Per evitar falsos positius, s'afegeix la correcció FDR (False Discovery Rate) als p-values:
+stats_table <- stats_table %>%
+  mutate(FDR = p.adjust(TTestPvalue, method = "fdr"))
+
+# Es filtren els metabòlits amb p-value ajustat (FDR) < 0.05 i s'extrauen els metabòlits significatius
+significant_metabolites <- stats_table %>%
+  filter(FDR < 0.05) %>%
+  arrange(FDR) %>%
+  pull(Metabolite)  
+
+# Es visualitza la selecció
+significant_metabolites
+length(significant_metabolites)
+```
+Dels 63 metabolits presents a les mostres, només 45 d'ells tenen diferencies estadisticament significatives entre el grup de pacients amb la malaltia i el grup de pacients de control.
+
+Es repeteix el boxplot de la distribució de les concentracions dels metabolits, seleccionant només els metabolits significatius i separant el grup cachexia del de control.
+
+```{r, warning=FALSE, message=FALSE}
+library(ggplot2)
+library(reshape2)
+
+# Filtrar les dades per només els metabòlits significatius
+filtered_data <- assays(se_cachexia)$raw[rownames(assays(se_cachexia)$raw) %in% significant_metabolites, , drop = FALSE]
+
+# Convertir les dades filtrades a format llarg
+long_data_filtered <- melt(filtered_data)
+colnames(long_data_filtered) <- c("Metabolite", "Sample", "Concentration")
+
+# Afegir la informació del grup (Cachexia vs Control)
+long_data_filtered$Group <- rep(colData(se_cachexia)$Muscle.loss, times = nrow(filtered_data))
+
+# Crear el boxplot separat per grups
+ggplot(long_data_filtered, aes(x = Metabolite, y = Concentration, fill = Group)) +
+  geom_boxplot(outlier.colour = "red", outlier.shape = 16) +
+  labs(title = "Comparació de concentració de metabòlits entre grups",
+       x = "Metabolits", y = "Concentració") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) + 
+  facet_wrap(~ Group, scales = "free_y", ncol = 1) +  # 1 columna i 2 files
+  ylim(0, 35000)  # Es fixa el rang de l'eix Y
+```
+
+
+#### Exploració multivariant:
+
+Es realitza un anàlisi de components principals (PCA) diferenciant el grup cachexia amb el control. A més, s'afegeixen els eixos marginals amb les densitats per visualitzar la distribució de les dades per a cada grup.
+
+
+```{r, warning=FALSE, message=FALSE}
+library(FactoMineR)
+library(factoextra)
+library(ggplot2)
+library(ggExtra)
+
+# PCA sobre les dades d'expressió
+pca_result <- PCA(t(expressionValues), scale.unit = TRUE, graph = FALSE)
+
+# Es crea el gràfic PCA 
+pca_plot <- fviz_pca_ind(
+  pca_result,
+  geom.ind = "point",
+  col.ind = colData(se_cachexia)$Muscle.loss,  # S'utilitza Muscle.loss per als grups
+  addEllipses = TRUE,
+  title = "Anàlisi PCA: Cachexia vs Control",
+  legend.title = "Muscle Loss"
+)
+
+# Es visualitza el gràfic
+pca_ggplot <- pca_plot + theme_minimal()
+
+# S'afegeixen els eixos marginals amb ggMarginal
+ggMarginal(
+  pca_ggplot,
+  type = "density",     # Tipus de gràfic marginal: densitat
+  groupColour = TRUE,   # Color segons grups (Muscle.loss)
+  groupFill = TRUE      # Omplir segons grups (Muscle.loss)
+)
+
+```
+Tot i que sí s'observen diferències entre ambdos grups, no es veu una separació clara entre ells. Tot i això, el gràfic sugereix que la major font de variació, explicada per els dos primers components, es pot atribuir a les mostres de cachexia.
+
+
+S'amplia l'anàlisi PCA utilitzant el paquet mixOmics. Es tracta d'un paquet d'anàlisi multivariant que es fa servir en l'anàlisi de dades òmiques que ofereix funcions avançades per a l'anàlisi de components principals (PCA).
+
+```{r, warning=FALSE, message=FALSE}
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+ BiocManager::install("mixOmics")
+```
+
+```{r}
+# Per simplificar els codis posteriors, es crea el data frame transposat
+df_cachexia <- t(assays(se_cachexia)$raw)
+```
+
+### Per elegir el nombre de components:
+
+```{r, warning=FALSE, message=FALSE}
+library(mixOmics)
+
+# S'escalen les dades i es calcula el PCA amb tune.pca()
+tune.pca.result <- tune.pca(df_cachexia, ncomp = 10, scale = TRUE)
+
+# Es visualitza el scree plot per identificar el número òptim de components
+plot(tune.pca.result, col = "lightblue")
+
+# Es visualitza la proporció acumulada de variància explicada
+tune.pca.result$cum.var
+```
+
+Proporció acumulada de variança;
+
+PC1: Explica el 40,43% de la variança total.
+PC3: Junts, PC1, PC2 i PC3 expliquen el 53,94%.
+PC6: Els primers 6 components expliquen el 67.29%.
+PC10: Els primers 10 components expliquen el 78,45%.
+
+El número òptim de components és 2-3.
+
+#### Es realitza el PCA amb 3 components:
+
+```{r, warning=FALSE, message=FALSE}
+# Es realitza el PCA final amb els primers 3 components
+pca.final <- pca(df_cachexia, ncomp = 3, center = TRUE, scale = TRUE)
+
+# Es visualitzen les mostres projectades en els dos primers components principals
+plotIndiv(pca.final, comp = c(1, 2), legend = FALSE, ind.names = TRUE,
+          group = se_cachexia$Muscle.loss,
+          title = "PCA mostres (PC1 i PC2)")
+```
+
+Tal com s'havia vist anteriorment, el gràfic sugereix que la major font de variació, explicada per els dos primers components, es pot atribuir a les mostres de cachexia. 
+
+Donat que s'ha executat el PCA per 3 components, es pot examinar aquest tercer component utilitzant un gràfic interactiu 3D. L'adició d'aquest tercer component resalta el fet que el grup cachexia és la major font de variació, quedant principalment 4 mostres com a possibles valors atípics (S2, S4, S5 i S27).
+
+```{r, warning=FALSE, message=FALSE}
+# Gràfic interactiu 3D.
+plotIndiv(pca.final, style = '3d',
+          group = se_cachexia$Muscle.loss,
+          title = 'PCA comp 1 - 3')
+```
+
+### Es realitza el gràfic de variables (gràfic de cercle de correlació):
+
+```{r, warning=FALSE, message=FALSE}
+# Abans de realitzar aquest gràfic, es comprova que les variables estàn centrades i escalades en el PCA:
+# pca.final <- pca(df_cachexia, ncomp = 3, center = TRUE, scale = TRUE)
+
+# Es visualitzen les variables/metabolits que contribueixen a PC1 i PC2
+plotVar(pca.final, comp = c(1, 2), 
+        var.names = TRUE, cex = 3, title = "PCA metabolits (PC1 i PC2)")
+```
+
+
+A més, es poden visualitzar les variables més importants per a cada component principal. Primer s'identifiquen amb la funció selectVar (que els ordena per ordre d'importancia) i després es crea una taula per visualitzar els 10 més importants de cada compost.
+
+```{r, warning=FALSE, message=FALSE}
+library(knitr)
+library(kableExtra)
+
+# Identificar las variables més importants per a  PC1, PC2 i PC3
+var.pc1 <- selectVar(pca.final, comp = 1)
+var.pc2 <- selectVar(pca.final, comp = 2)
+var.pc3 <- selectVar(pca.final, comp = 3)
+
+# Es seleccionen les 10 primeres variables més importants per a cada un
+top_vars <- data.frame(
+  PC1 = var.pc1$name[1:10], 
+  PC2 = var.pc2$name[1:10], 
+  PC3 = var.pc3$name[1:10]   
+)
+
+# Es crea la taula
+kable(top_vars, format = "markdown")
+```
+
+De la mateixa manera, es poden poden ordenar de forma inversa per veure quins metabolits son menys importants. Es selecciona un llindar amb la influencia mínima desitjada i, tots aquells que estiguin per sota d'aquest llindar, seran variables simplificables.
+
+Es realitza aquesta operació per a cada component, i finalment es busquen quines variables son simplificables per als tres components.
+
+```{r}
+# S'estableix el llindar per a les càrregues petites
+llindar <- 0.2
+
+# S'obtenen les càrregues de totes les variables
+loadings <- pca.final$rotation
+
+# S'identifiquen les variables amb càrregues menors a 0.2 en cada component
+variables_baixes_pc1 <- rownames(loadings)[abs(loadings[, 1]) < llindar]
+variables_baixes_pc2 <- rownames(loadings)[abs(loadings[, 2]) < llindar]
+variables_baixes_pc3 <- rownames(loadings)[abs(loadings[, 3]) < llindar]
+
+# Es trobar les variables comunes entre PC1, PC2 i PC3
+comunes <- Reduce(intersect, list(variables_baixes_pc1, variables_baixes_pc2, variables_baixes_pc3))
+
+# Es mostren les variables comunes
+comunes
+```
+
+Per finalitzar, es pot buscar els metabolits que son poc significatius i, a més, son menys importants respecte als 3 components principals:
+
+```{r}
+# Trobar la intersecció (els comuns)
+final_comunes <- intersect(comunes, significant_metabolites)
+
+# Mostrar el resultat
+final_comunes
+```
+
+```{r}
+# Per accedir als noms reals dels metabolits a partir de la columna "Metabolite" de rowData del summarizedExperiment:
+met_names <- rowData(se_cachexia)$Metabolite[rownames(rowData(se_cachexia)) %in% final_comunes]
+
+# Es visualitzen:
+met_names
+```
+
+
+Finalment, es realitza un diagrama bidimensional:
+
+```{r, warning=FALSE, message=FALSE}
+# Diagrama bidimensional
+biplot(pca.final, group = se_cachexia$Muscle.Loss)
+```
+
+#### Heatmap
+
+Una altra tècnica exploratòria interessant és la visualització de la matriu de correlació entre els metabolits per veure les relacions entre les concentracions. 
+
+Una forma de visualitzar-ho és utilitzant la funció cor i un mapa de calor (heatmap): aquesta visualització permet identificar possibles grups de metabolits que tenen una correlació forta entre ells.
+
+```{r, warning=FALSE, message=FALSE}
+# Calcular la matriu de correlació
+cor_matrix <- cor(t(assay(se_cachexia)))
+
+# Visualitzar la matriu de correlació amb un mapa de calor
+library(pheatmap)
+pheatmap(cor_matrix, 
+         main = "Mapa de calor de la correlació entre metabolits", 
+         cluster_rows = TRUE, cluster_cols = TRUE, 
+         show_rownames = FALSE, show_colnames = FALSE)
+
+```
+
+Les correlacions entre metabolits poden ser útils per agrupar metabolits relacionats entre si o, per exemple, per identificar vies metabòliques comunes. 
+
+Es crea una taula que recull les correlacions superiors a 0.8.
+
+
+```{r, warning=FALSE, message=FALSE}
+library(knitr)
+
+# Calcular la matriu de correlació
+cor_matrix <- cor(t(assay(se_cachexia)))
+
+# Establir el llindar de correlació (p. ex., 0.8)
+cor_threshold <- 0.8
+
+# Crear una matriu booleana (TRUE si la correlació és major que el llindar, excepte la diagonal)
+cor_matrix_filtered <- cor_matrix
+diag(cor_matrix_filtered) <- NA  # No es volen correlacions de un mateix metabolit amb si mateix
+
+# Filtrar les correlacions que superen el llindar
+high_correlations <- which(abs(cor_matrix_filtered) > cor_threshold, arr.ind = TRUE)
+
+# Crear una taula amb les correlacions més altes
+high_correlations_table <- data.frame(
+  Metabolit_1 = rownames(cor_matrix)[high_correlations[, 1]],
+  Metabolit_2 = colnames(cor_matrix)[high_correlations[, 2]],
+  Correlacio = cor_matrix_filtered[high_correlations]
+)
+
+# Mostrar la taula de correlacions
+kable(high_correlations_table, format = "markdown")
+```
+
+
+#### Arxius necessàris per a GitHub:
+
+```{r}
+# Desar l'objecte `SummarizedExperiment` en format .Rda
+save(se_cachexia, file = "se_cachexia.Rda")
+```
+
+```{r}
+# Dades en format text:
+
+# Es guarden les concentracions en un arxiu CSV
+write.table(assays(se_cachexia)$raw, file = "matrix_concentrations.csv", sep = ",", row.names = TRUE)
+
+# Es guarden les metadades en un arxiu CSV
+write.table(colData(se_cachexia), file = "metadata_col.csv", sep = ",", row.names = TRUE)
+
+# Es guarden les metadades en un arxiu CSV
+write.table(rowData(se_cachexia), file = "metadata_row.csv", sep = ",", row.names = TRUE)
+```
+
+
+```{r}
+# Es crea la taula amb la informació sobre les metadades:
+
+library(kableExtra)
+
+# Funció per obtenir la descripció dels camps
+get_description <- function(col_name) {
+  if (col_name == "Patient.ID") {
+    return("Identificador del pacient")
+  } else if (col_name == "Muscle.loss") {
+    return("Grup de pèrdua muscular (cachexic vs control)")
+  } else if (col_name == "Metabolite") {
+    return("Nom complet del metabolit")
+  } else {
+    return("Descripció general")
+  }
+}
+
+# Funció per crear una taula de metadades
+create_metadata_table <- function(data, type) {
+  # Obtenir els noms de les columnes
+  cols <- colnames(data)
+  # Crear el data frame amb les descripcions i els valors
+  data_df <- data.frame(
+    Descripció = sapply(cols, get_description),  # Descripció per cada columna
+    Valors = sapply(cols, function(col) paste(data[[col]], collapse = ", "))  # Valors separats per comes
+  )
+  
+  # Afegir una línia per al títol de l'estudi si és metadata
+  if (type == "metadata") {
+    metadata_df <- data.frame(Descripció = "Descripció de l'estudi", 
+                              Valors = metadata(se_cachexia)$study_description)
+    data_df <- rbind(metadata_df, data_df)  # Afegir la línia de metadades de l'estudi
+  }
+  
+  return(data_df)
+}
+
+# Crear taules per a colData i rowData
+col_data_df <- create_metadata_table(colData(se_cachexia), "colData")
+row_data_df <- create_metadata_table(rowData(se_cachexia), "rowData")
+
+# Combinar les taules: metadata, colData i rowData
+combined_df <- rbind(col_data_df, row_data_df)
+
+# Generar la taula markdown amb kable
+combined_table <- combined_df %>%
+  kable(format = "markdown", align = "l") %>%
+  kable_styling()
+
+# Exportar la taula a un fitxer markdown
+writeLines(c("# Metadades del SummarizedExperiment",
+             "",
+             "A continuació es presenta una taula amb les descripcions i valors dels camps de metadades:",
+             "",
+             combined_table), "metadata_desc.md")
+
+# Mostrar la taula
+combined_table
+```
+
+
+
+
